@@ -8,6 +8,9 @@
 # User-specific files
 .Ruserdata
 
+## large input files
+41587_2019_344_MOESM4_ESM.xls
+
 # Example code in package build process
 *-Ex.R
 
