@@ -1,0 +1,127 @@
+---
+title: "PhosphoScore"
+output: github_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## GitHub Documents
+
+This is an R Markdown format used for publishing markdown documents to GitHub. When you click the **Knit** button all R code chunks are run and a markdown file (.md) suitable for publishing to GitHub is generated.
+
+```{r packages, echo = F}
+library(tidyverse)
+```
+Ochoa and Beltrao, Nature Biotech, 2019, Human phosphoproteome
+(Ochoa, David, Andrew F. Jarnuczak, Cristina Viéitez, Maja Gehre, Margaret Soucheray, André Mateus, Askar A. Kleefeldt, et al. 2020. “The Functional Landscape of the Human Phosphoproteome.” Nature Biotechnology 38 (3): 365–73. https://doi.org/10.1038/s41587-019-0344-3.)
+They've made a functional score for each phosphosite, based on a combination of 59 features
+```{r}
+UniProtIndex <- read_tsv(file = 'public_datasets/UniProtID_Gene_index.txt') %>% 
+  unique()
+UniProtIndex %>% 
+  filter(To == 'AAK1')
+PhosphoScore <- read_tsv(file = "public_datasets/OchoaBeltrao_PhosphoScore.txt") %>% 
+  inner_join(., UniProtIndex, by = c('uniprot' = "From")) %>% 
+  select(uniprot, 'gene' = To, 'prot_seq_position' = position, functional_score)
+PhosphoScore %>% filter(gene == 'SHC1') %>% 
+  arrange(prot_seq_position)
+```
+
+
+Ochoa table does not contain information on whether the position is a Tyr, or a Ser/Thr
+I will merge it with the original table from PhosphositePlus (phosphosite.org) database which contains motif and amino acid information
+Amino acid infor is contained in the MOD_RSD column, in this form, e.g. S119-p
+Parse this to separate position and amino acid
+(ACC-ID is Uniprot ID) - use that and residue position to join with the Ochoa data
+```{r}
+PhosphoSitePlus <- read_tsv('public_datasets/phosphosite.txt') %>% 
+  select(PROTEIN, 'uniprot' = ACC_ID, MOD_RSD, 'site' = `SITE_+/-7_AA`) %>% 
+  separate(MOD_RSD, c("pho_res", NA)) %>% 
+  mutate('aa' = str_sub(pho_res, 1, 1)) %>% 
+  mutate('prot_seq_position' = parse_number(pho_res)) %>% 
+  select(uniprot, prot_seq_position, aa, site) %>% 
+  left_join(., PhosphoScore, by = c('uniprot', 'prot_seq_position')) %>% 
+  arrange(uniprot, prot_seq_position)
+
+```
+
+
+
+
+
+Now get the subset of this data that is only targets of ERK kinase
+Which proteins and peptides are phosphorylated by ERK is from the review by Unal
+Ünal, Evrim B., Florian Uhlitz, and Nils Blüthgen. 2017. “A Compendium of ERK Targets.” FEBS Letters 591 (17): 2607–15. https://doi.org/10.1002/1873-3468.12740.
+Data downloaded from this website: http://sys-bio.net/erk_targets/index.html
+```{r}
+ERK_Targets <- read_tsv('public_datasets/ERK_targets.txt') %>% 
+  select('uniprot' = `Uniprot ID`, 'gene' = `Gene Name`, 'aa' = `Amino Acid`, 'prot_seq_position' = Site, class, organism, 'ERK_motif' = `ERK Ph-motif`, 'ERK_ext_motif' = `ERK extended Ph-motif`) #%>% 
+  #filter(grepl('human', organism))
+ERK_Targets %>% filter(gene == 'AAK1')
+```
+Phospho functional score for direct and indirect ERK targets
+```{r}
+ERK_Targets_scored <- inner_join(ERK_Targets, PhosphoScore, by = c('uniprot', 'gene', 'prot_seq_position'))
+ERK_direct_scored <- ERK_Targets_scored %>% 
+  filter(class == 'direct')
+ERK_indirect_scored <- ERK_Targets_scored %>% 
+  filter(class == 'indirect')
+```
+Annotate which of the phospho targets of ERK are transcription factors
+The list is manually currated, downloaded from here: http://humantfs.ccbr.utoronto.ca/download.php
+The reference is the review 
+Lambert, Samuel A., Arttu Jolma, Laura F. Campitelli, Pratyush K. Das, Yimeng Yin, Mihai Albu, Xiaoting Chen, Jussi Taipale, Timothy R. Hughes, and Matthew T. Weirauch. 2018. “The Human Transcription Factors.” Cell 172 (4): 650–65. https://linkinghub.elsevier.com/retrieve/pii/S0092867418301065.
+```{r}
+human_TFs <- read_tsv('public_datasets/human_TFs.txt', col_names = FALSE) %>% 
+  pull(X1)
+```
+
+Compare distribution of Functional scores for 
+1) all phospho data with scores, 
+2) all ERK targets, 
+3) all direct and all indirect ERK targets, 
+4) and TF and non-TF targets ERK targets
+```{r}
+union_df_to_plot <- PhosphoScore %>% 
+  unite(., col = 'pos', gene, prot_seq_position, sep = '_', remove = T, na.rm = F) %>% 
+  select(pos, functional_score) %>% 
+  mutate('class' = 'all')
+temp <- ERK_Targets_scored %>% 
+  unite(., col = 'pos', gene, prot_seq_position, sep = '_', remove = T, na.rm = T) %>% 
+  select(pos, functional_score) %>% 
+  mutate('class' = 'all_ERK')
+union_df_to_plot <- bind_rows(union_df_to_plot, temp)
+temp <- ERK_Targets_scored %>% 
+  unite(., col = 'pos', gene, prot_seq_position, sep = '_', remove = T, na.rm = T) %>% 
+  select(pos, functional_score, class)
+union_df_to_plot <- bind_rows(union_df_to_plot, temp)
+temp <- ERK_Targets_scored %>% 
+  mutate('class' = ifelse(gene %in% human_TFs, 'TF', 'not_TF')) %>% 
+  unite(., col = 'pos', gene, prot_seq_position, sep = '_', remove = T, na.rm = T) %>% 
+  select(pos, functional_score, class)
+union_df_to_plot <- bind_rows(union_df_to_plot, temp)
+
+union_df_to_plot %>% 
+  ggplot(aes(x = functional_score, color = class)) + 
+  geom_density(alpha = 0.5) +
+  theme_classic()
+```
+
+
+```{r}
+PhosphoSitePlus %>% 
+  filter(! is.na(functional_score)) %>% 
+  ggplot(aes(x = functional_score, color = aa)) + geom_density()
+```
+
+
+
+Get all the phospho sites that are directly phosphorylated by ERK, and that are not in TFs
+```{r}
+ERK_direct_scored_nonTF <- ERK_direct_scored %>% 
+  filter(!gene %in% human_TFs & functional_score > 0.5)
+```
+
+
